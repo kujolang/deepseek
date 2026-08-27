@@ -9,7 +9,10 @@ DeepSeek chat and reasoning models for Kujo through the compatible API.
 ## Install
 
 ```bash
-kujo run /path/to/kennel/kennel.kujo --interpreter -- add github:kujolang/deepseek@v0.1.1 --alias deepseek
+kujo run /path/to/kennel/kennel.kujo \
+  --interpreter \
+  -- add github:kujolang/deepseek@v0.1.1 \
+  --alias deepseek
 kujo run /path/to/kennel/kennel.kujo --interpreter -- install
 export DEEPSEEK_API_KEY=your-key
 ```
