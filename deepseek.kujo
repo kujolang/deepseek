@@ -1,0 +1,9 @@
+from src.deepseek import create_client, chat, client_chat, client_models, parse_stream
+from src.provider import deepseek_provider, deepseek_driver
+export create_client:=create_client
+export chat:=chat
+export client_chat:=client_chat
+export client_models:=client_models
+export parse_stream:=parse_stream
+export deepseek_provider:=deepseek_provider
+export deepseek_driver:=deepseek_driver

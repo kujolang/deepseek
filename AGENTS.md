@@ -1,0 +1,1 @@
+Root exports are in `deepseek.kujo`; native DeepSeek code is `src/deepseek.kujo`; the AI SDK driver is `src/provider.kujo`. Run `bash scripts/release_quality_gate.sh`. Preserve DeepSeek reasoning/tool metadata, use immutable dependencies, and do not modify AI SDK core.
