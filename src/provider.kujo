@@ -1,11 +1,107 @@
-func get(o,k,f) { if type(o)=="dict" && has_key(o,k) { return o[k] }; return f }
-func provider_impl(config) { if type(config)!="dict" { config:={} }; return {"name":"deepseek","base_url":get(config,"base_url","https://api.deepseek.com/v1"),"default_model":get(config,"model",""),"api_key_env":"DEEPSEEK_API_KEY","capabilities":{"streaming":true,"tool_calls":true,"structured_output":true,"reasoning":true},"driver":driver()} }
-func describe(p) { return {"id":"deepseek-compatible","protocol":"deepseek-openai-compatible","auth":{"mode":"bearer","allow_anonymous":false},"capabilities":p["capabilities"]} }
-func validate(p) { if type(p)!="dict" || get(p,"base_url","")=="" { return {"ok":false,"errors":[{"field":"base_url","message":"DeepSeek provider requires a base URL."}]}}; return {"ok":true,"errors":[]} }
-func encode_chat(ctx) { o:=ctx["resolved_options"]; msgs:=[]; for m in ctx["messages"] { msgs=push(msgs,{"role":get(m,"role","user"),"content":get(m,"content","")}) }; body:={"model":get(o,"model",get(ctx["provider"],"default_model","")),"messages":msgs,"stream":get(o,"stream",false)}; for k in ["tools","tool_choice","response_format","temperature","top_p","max_tokens","reasoning","provider"] { if has_key(o,k) { body[k]:=o[k] } }; return {"url":ctx["provider"]["base_url"]+"/chat/completions","method":"POST","headers":{"Authorization":"Bearer "+ctx["credential"],"Content-Type":"application/json"},"protected_headers":["Authorization","Content-Type"],"body":to_json(body),"stream_mode":get(o,"stream",false)} }
-func decode_chat(ctx) { d:=ctx["data"]; c:={}; if len(get(d,"choices",[]))>0 { c:=d["choices"][0] }; m:=get(c,"message",{}); u:=get(d,"usage",{}); return {"ok":true,"request_id":get(ctx,"request_id",""),"model":get(d,"model",get(ctx,"fallback_model","")),"output_text":get(m,"content",""),"finish_reason":get(c,"finish_reason","stop"),"tool_calls":get(m,"tool_calls",[]),"usage":{"input_tokens":get(u,"prompt_tokens",0),"output_tokens":get(u,"completion_tokens",0),"total_tokens":get(u,"total_tokens",0)},"raw_provider":d} }
-func decode_error(ctx) { d:=ctx["data"]; if type(d)!="dict" || !has_key(d,"error") { return {"ok":false,"matched":false} }; e:=d["error"]; return {"ok":false,"matched":true,"category":"provider","message":get(e,"message","DeepSeek request failed"),"provider_code":get(e,"code","deepseek_error"),"raw_provider":d} }
-func decode_stream(ctx) { p:=parse_stream(get(ctx,"chunks",[]),get(ctx,"body_text","")); if !p["ok"] { return p }; text:=""; for e in p["events"] { c:={}; if len(get(e,"choices",[]))>0 { c:=e["choices"][0] }; text:=text+get(get(c,"delta",{}),"content","") }; return {"ok":true,"output_text":text,"finish_reason":"stop","usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0},"raw_provider":{"stream_events":p["events"]}} }
-func driver() { return {"contract":"ai-sdk-provider-driver","version":"1.0.0","id":"deepseek-compatible","describe":describe,"validate":validate,"encode_chat":encode_chat,"decode_chat":decode_chat,"decode_error":decode_error,"decode_stream":decode_stream} }
-export deepseek_provider:=provider_impl
-export deepseek_driver:=driver
+from src.deepseek import deepseek_endpoint, DEEPSEEK_CHAT_BASE, parse_stream
+from src.ai_sdk import normalize_non_stream_success, normalize_stream_success
+
+func get(value,key,fallback) {
+    if type(value) == "dict" && has_key(value,key) { return value[key] }
+    return fallback
+}
+
+func provider_impl(config) {
+    base := deepseek_endpoint(get(config,"base_url",DEEPSEEK_CHAT_BASE))
+    return {"name":"deepseek","base_url":base,"default_model":get(config,"model",""),"api_key_env":"DEEPSEEK_API_KEY","capabilities":{"streaming":true,"tool_calls":true,"structured_output":true,"reasoning":true},"driver":driver()}
+}
+
+func describe(provider) {
+    return {"id":"deepseek-compatible","protocol":"deepseek-openai-compatible","auth":{"mode":"bearer","allow_anonymous":false},"capabilities":provider["capabilities"]}
+}
+
+func validate(provider,endpoint) {
+    if endpoint(get(provider,"base_url","")) == "" {
+        return {"ok":false,"errors":[{"field":"base_url","message":"DeepSeek base URL must be HTTPS."}]}
+    }
+    return {"ok":true,"errors":[]}
+}
+
+func encode_chat(context) {
+    provider := context["provider"]
+    options := get(context,"options",{})
+    resolved := context["resolved_options"]
+    prepared := get(context,"payload",{})
+    payload := {}
+    for key in keys(prepared) {
+        if key != "stream_options" || get(prepared,"stream",false) { payload[key] := prepared[key] }
+    }
+    if len(keys(payload)) == 0 {
+        payload := {"model":get(resolved,"model",get(provider,"default_model","")),"messages":context["messages"],"stream":get(resolved,"stream",false)}
+    }
+    for key in ["tools","tool_choice","response_format","temperature","top_p","max_tokens","reasoning","provider"] {
+        if has_key(resolved,key) && has_key(payload,key) == 0 { payload[key] := resolved[key] }
+    }
+    for key in ["thinking","reasoning_effort","stream_options","frequency_penalty","presence_penalty","stop","logprobs","top_logprobs"] {
+        if key == "stream_options" && !get(payload,"stream",false) { continue }
+        if has_key(options,key) { payload[key] := options[key] }
+        else if has_key(resolved,key) { payload[key] := resolved[key] }
+    }
+    headers := {"Authorization":"Bearer "+context["credential"],"Content-Type":"application/json"}
+    return {"url":provider["base_url"]+"/chat/completions","method":"POST","headers":headers,"protected_headers":["Authorization","Content-Type"],"body":to_json(payload),"stream_mode":get(payload,"stream",false)}
+}
+
+func preserve_cache_usage(result,accounting) {
+    usage := result["usage"]
+    if type(accounting) == "dict" {
+        for name in ["prompt_cache_hit_tokens","prompt_cache_miss_tokens"] {
+            if has_key(accounting,name) && type(accounting[name]) == "int" && accounting[name] >= 0 {
+                usage[name] := accounting[name]
+            }
+        }
+    }
+    result["usage"] := usage
+    return result
+}
+
+func decode_chat(context,normalize,field,cache_usage) {
+    data := context["data"]
+    if type(data) != "dict" || has_key(data,"error") { return {"ok":false} }
+    result := normalize({"provider":{"name":"deepseek"}},field(context,"status_code",0),data,field(context,"fallback_model",""))
+    result["raw_provider"] := result["raw"]
+    return cache_usage(result,field(data,"usage",null))
+}
+
+func decode_error(context) {
+    data := context["data"]
+    if type(data) != "dict" || has_key(data,"error") == 0 { return {"ok":false,"matched":false} }
+    error := data["error"]
+    message := get(error,"message",error)
+    if type(message) != "string" { message = "DeepSeek request failed." }
+    return {"ok":false,"matched":true,"category":"provider","message":message,"provider_code":get(error,"code","deepseek_error"),"raw_provider":data}
+}
+
+func decode_stream(context,parse,normalize,field,cache_usage) {
+    parsed := parse(field(context,"chunks",[]),field(context,"body_text",""))
+    if !parsed["ok"] || !parsed["complete"] || len(parsed["events"]) == 0 { return {"ok":false} }
+    accounting := null
+    for event in parsed["events"] {
+        if has_key(event,"error") { return {"ok":false} }
+        usage := field(event,"usage",null)
+        if type(usage) == "dict" { accounting = usage }
+    }
+    result := normalize({"provider":{"name":"deepseek"}},field(context,"status_code",0),parsed["events"],field(context,"fallback_model",""))
+    result["raw_provider"] := result["raw"]
+    return cache_usage(result,accounting)
+}
+
+func driver() {
+    normalize_chat := normalize_non_stream_success
+    normalize_stream := normalize_stream_success
+    parser := parse_stream
+    endpoint := deepseek_endpoint
+    validate_provider := validate
+    cache_usage := preserve_cache_usage
+    field := get
+    chat_decoder := decode_chat
+    stream_decoder := decode_stream
+    return {"contract":"ai-sdk-provider-driver","version":"1.0.0","id":"deepseek-compatible","describe":describe,"validate":func(provider) { return validate_provider(provider,endpoint) },"encode_chat":encode_chat,"decode_error":decode_error,"decode_chat":func(context) { return chat_decoder(context,normalize_chat,field,cache_usage) },"decode_stream":func(context) { return stream_decoder(context,parser,normalize_stream,field,cache_usage) }}
+}
+
+export deepseek_provider := provider_impl
+export deepseek_driver := driver

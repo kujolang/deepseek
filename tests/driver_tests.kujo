@@ -1,3 +1,48 @@
-test_setup { from src.provider import deepseek_provider, deepseek_driver }
+test_setup { from src.provider import deepseek_provider, deepseek_driver; from src.ai_sdk import create_client, chat_completion_stream }
 test "compatible driver preserves DeepSeek options" { p:=deepseek_provider({"model":"llama-test"}); d:=deepseek_driver(); e:=d["encode_chat"]({"provider":p,"credential":"secret","messages":[{"role":"user","content":"hi"}],"resolved_options":{"model":"llama-test","reasoning_effort":"high"}}); assert_equal(contains(e["url"],"chat/completions"),1); assert_equal(contains(e["body"],"llama-test"),1) }
 test "driver maps chat response and usage" { r:=deepseek_driver()["decode_chat"]({"fallback_model":"m","data":{"model":"m","choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6}}}); assert_equal(r["output_text"],"ok"); assert_equal(r["usage"]["total_tokens"],6) }
+
+test "gateway config and thinking tool messages preserve the vendor contract" {
+    provider := deepseek_provider({"base_url":"https://gateway.example/v1/","model":"deepseek-flash"})
+    assert_equal(provider["base_url"],"https://gateway.example/v1")
+    driver := deepseek_driver()
+    assert_true(driver["validate"](provider)["ok"])
+    assert_false(driver["validate"](deepseek_provider({"base_url":"http://gateway.example"}))["ok"])
+    messages := [{"role":"assistant","content":"","reasoning_content":"prior receipt detail","tool_calls":[{"id":"call-1","type":"function","function":{"name":"lookup","arguments":"{}"}}]},{"role":"tool","tool_call_id":"call-1","content":"fixture answer"}]
+    options := {"thinking":{"type":"enabled"},"reasoning_effort":"high","stream_options":{"include_usage":true}}
+    encoded := driver["encode_chat"]({"provider":provider,"credential":"fixture-key","messages":messages,"payload":{"model":"deepseek-flash","messages":messages,"stream":false},"resolved_options":{"model":"deepseek-flash","stream":false},"options":options})
+    body := parse_json(encoded["body"])
+    assert_equal(body["messages"][0]["reasoning_content"],"prior receipt detail")
+    assert_equal(body["messages"][1]["tool_call_id"],"call-1")
+    assert_equal(body["thinking"]["type"],"enabled")
+    assert_equal(body["reasoning_effort"],"high")
+    assert_equal(has_key(body,"stream_options"),0)
+}
+
+test "pinned SDK keeps DeepSeek tool fragments and terminal accounting" {
+    provider := deepseek_provider({"model":"deepseek-flash"})
+    client := create_client(provider,"fixture-key")
+    transport := func(url,options) {
+        assert_equal(url,"https://api.deepseek.com/v1/chat/completions")
+        body := parse_json(options["_body"])
+        assert_equal(body["messages"][0]["reasoning_content"],"prior receipt detail")
+        assert_equal(body["messages"][1]["tool_call_id"],"fixture-call")
+        assert_equal(body["thinking"]["type"],"enabled")
+        assert_equal(body["stream_options"]["include_usage"],true)
+        return Ok({"_status":200,"_stream_chunks":[
+            "data: {\"id\":\"reply\",\"choices\":[{\"delta\":{\"reasoning_content\":\"provider receipt\",\"content\":\"answer\",\"tool_calls\":[{\"index\":0,\"id\":\"tool1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\"}}]}}]}\r\n\r\n",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"}\"}}]}}]}\r\n\r\n",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":4,\"total_tokens\":7,\"prompt_cache_hit_tokens\":2}}\r\n\r\n",
+            "data: [DONE]\r\n\r\n"
+        ]})
+    }
+    messages := [{"role":"assistant","content":"","reasoning_content":"prior receipt detail","tool_calls":[{"id":"fixture-call","type":"function","function":{"name":"lookup","arguments":"{}"}}]},{"role":"tool","content":"fixture answer","tool_call_id":"fixture-call"}]
+    result := chat_completion_stream(client,messages,{"transport":transport,"max_retries":0,"thinking":{"type":"enabled"},"reasoning_effort":"high"},func(event) { return null })
+    assert_true(result["ok"])
+    assert_equal(result["output_text"],"answer")
+    assert_equal(result["finish_reason"],"tool_calls")
+    assert_equal(result["tool_calls"][0]["function"]["arguments"],"{}")
+    assert_equal(result["usage"]["total_tokens"],7)
+    assert_equal(result["raw"]["stream_events"][0]["choices"][0]["delta"]["reasoning_content"],"provider receipt")
+    assert_equal(result["usage"]["prompt_cache_hit_tokens"],2)
+}

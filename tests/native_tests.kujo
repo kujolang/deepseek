@@ -1,3 +1,50 @@
-test_setup { from src.deepseek import create_client, client_chat, parse_stream }
+test_setup { from src.deepseek import create_client, client_chat, client_models, parse_stream }
 test "client validates host and bearer auth" { c:=create_client({"api_key":"secret","transport":func(url,o) { assert_equal(o["_headers"]["Authorization"],"Bearer secret"); return Ok({"_status":200,"_body":"{\"choices\":[]}"}) }}); assert_true(client_chat(c,{"model":"deepseek-large-latest","reasoning_effort":"high"})["ok"]); assert_true(create_client({"base_url":"http://remote.example"})["validation_error"]!="") }
 test "stream parser and redaction" { p:=parse_stream(["data: {\"choices\":[{\"delta\":{\"content\":\"A\"}}]}\n\n","data: [DONE]\n\n"],""); assert_true(p["ok"]); assert_equal(len(p["events"]),1); c:=create_client({"api_key":"secret","transport":func(url,o) { return Ok({"_status":401,"_body":"{\"error\":{\"message\":\"secret denied\"}}"}) }}); r:=client_chat(c,{}); assert_equal(contains(r["message"],"secret"),0) }
+
+test "model-list and chat fetch share validated native transport" {
+    client := create_client({"base_url":"https://gateway.example/v1/","api_key":"fixture-key","timeout":10.0,"transport":func(url,options) {
+        assert_equal(url,"https://gateway.example/v1/models")
+        assert_equal(options["method"],"GET")
+        assert_equal(options["redirects"],"none")
+        assert_equal(options["timeout"],10.0)
+        assert_equal(options["_headers"]["Authorization"],"Bearer fixture-key")
+        return Ok({"_status":200,"_body":"{\"data\":[]}"})
+    }})
+    match client_models(client) {
+        case Ok(response): { assert_equal(response["_status"],200) }
+        case Err(error): { assert_true(false) }
+    }
+    malformed := create_client({"api_key":"fixture-key","transport":func(url,options) { return Ok({"_status":200,"_body":"not JSON"}) }})
+    assert_false(client_chat(malformed,{})["ok"])
+}
+
+test "native chat returns validated buffered stream events" {
+    client := create_client({"api_key":"fixture-key","transport":func(url,options) {
+        assert_equal(options["stream"],true)
+        assert_equal(parse_json(options["_body"])["stream"],true)
+        return Ok({"_status":200,"_stream_chunks":[
+            "data: {\"choices\":\r\ndata: [{\"delta\":{\"reasoning_content\":\"receipt detail\",\"content\":\"hello\"}}]}\r\n\r\n",
+            "data: [DONE]\r\n\r\n"
+        ]})
+    }})
+    result := client_chat(client,{"model":"deepseek-flash","stream":true})
+    assert_true(result["ok"])
+    assert_equal(result["events"][0]["choices"][0]["delta"]["reasoning_content"],"receipt detail")
+    assert_equal(result["events"][0]["choices"][0]["delta"]["content"],"hello")
+    assert_false(parse_stream([],"data: {\"partial\":true}\n\n")["complete"])
+    truncated := create_client({"api_key":"fixture-key","transport":func(url,options) {
+        return Ok({"_status":200,"_body":"data: {\"choices\":[]}\n\n"})
+    }})
+    assert_false(client_chat(truncated,{"stream":true})["ok"])
+}
+
+test "successful native replies redact documented response fields without changing types" {
+    client := create_client({"api_key":"receipt-key","transport":func(url,options) {
+        return Ok({"_status":200,"_body":"{\"content\":\"receipt-key\",\"tokens\":2}","_headers":{"x-diagnostic":"receipt-key"}})
+    }})
+    result := client_chat(client,{})
+    assert_true(result["ok"])
+    assert_equal(result["data"]["tokens"],2)
+    assert_equal(contains(to_json(result),"receipt-key"),0)
+}

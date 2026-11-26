@@ -1,10 +1,10 @@
 # Kujo DeepSeek Provider
 
-[![Version](https://img.shields.io/badge/version-0.1.1-black)](https://github.com/kujolang/deepseek/releases/tag/v0.1.1)
+[![Version](https://img.shields.io/badge/version-0.1.1-black)](https://github.com/kujolang/deepseek/tree/v0.1.1)
 [![License](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
 [![built with Kujo](https://img.shields.io/badge/built%20with-Kujo-white.svg)](https://github.com/kujolang/kujo)
 
-DeepSeek chat and reasoning models for Kujo through the compatible API.
+DeepSeek chat and reasoning models for Kujo 1.5.0 or later through the compatible API.
 
 ## Install
 
@@ -23,7 +23,7 @@ from deepseek import create_client, client_chat
 
 client := create_client({})
 request := {
-    "model": "deepseek-chat",
+    "model": "deepseek-flash",
     "messages": [
         {
             "role": "user",
@@ -39,15 +39,15 @@ print(result["data"]["choices"][0]["message"]["content"])
 
 ## Native API
 
-The native layer preserves DeepSeek response fields, reasoning controls, tools, JSON output, streaming, and usage metadata.
+The native layer handles DeepSeek chat, model discovery, reasoning controls, tools, JSON output and usage metadata. For a native chat request with `stream: true`, successful results include buffered `events`. The standalone parser also reports whether it encountered the completion marker.
 
 ## AI SDK integration
 
-`deepseek_provider({"model": "deepseek-chat"})` supplies normalized chat and streaming semantics through the compatible driver. The existing AI SDK preset remains supported.
+`deepseek_provider({"model": "deepseek-flash"})` supplies normalized chat and streaming semantics through the compatible driver. Use the current model name `deepseek-flash` for new configurations. When continuing a thinking-mode conversation with tools, pass the provider's `reasoning_content` on assistant turns along with the tool messages. [DeepSeek thinking mode](https://api-docs.deepseek.com/guides/thinking_mode/)
 
 ## Authentication and security
 
-Set `DEEPSEEK_API_KEY`. Remote endpoints require HTTPS; embedded credentials, header injection, and secret leakage are rejected.
+Set `DEEPSEEK_API_KEY`. Native requests require HTTPS and disable redirects. The native client filters the configured bearer value from diagnostics and raw responses.
 
 ## Testing and documentation
 
