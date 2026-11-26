@@ -8,6 +8,8 @@ DeepSeek chat and reasoning models for Kujo 1.5.0 or later through the compatibl
 
 ## Install
 
+The current package requires Kujo 1.6.0 or newer.
+
 ```bash
 kujo run /path/to/kennel/kennel.kujo \
   -- add github:kujolang/deepseek@v0.1.1 \
